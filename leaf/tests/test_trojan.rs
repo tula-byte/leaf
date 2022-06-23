@@ -25,7 +25,7 @@ fn test_trojan() {
                 "settings": {
                     "address": "127.0.0.1",
                     "port": 3001,
-                    "password": "password2"
+                    "password": "password"
                 }
             }
         ]
@@ -40,10 +40,7 @@ fn test_trojan() {
                 "address": "127.0.0.1",
                 "port": 3001,
                 "settings": {
-                    "passwords": [
-                        "password",
-                        "password2"
-                    ]
+                    "password": "password"
                 }
             }
         ],

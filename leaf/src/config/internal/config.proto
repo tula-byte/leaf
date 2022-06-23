@@ -51,7 +51,7 @@ message ShadowsocksInboundSettings {
 }
 
 message TrojanInboundSettings {
-	repeated string passwords = 1;
+	string password = 3;
 }
 
 message WebSocketInboundSettings {
@@ -166,8 +166,6 @@ message FailOverOutboundSettings {
 	bool fallback_cache = 6;
 	uint32 cache_size = 7;
 	uint32 cache_timeout = 8;
-	string last_resort = 9;
-	uint32 health_check_timeout = 10;
 }
 
 message SelectOutboundSettings {

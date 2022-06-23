@@ -35,7 +35,7 @@ pub struct ShadowsocksInboundSettings {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TrojanInboundSettings {
-    pub passwords: Option<Vec<String>>,
+    pub password: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -221,8 +221,6 @@ pub struct Rule {
     pub external: Option<Vec<String>>,
     #[serde(rename = "portRange")]
     pub port_range: Option<Vec<String>>,
-    #[serde(rename = "inboundTag")]
-    pub inbound_tag: Option<Vec<String>>,
     pub target: String,
 }
 
@@ -371,10 +369,10 @@ pub fn to_internal(json: &mut Config) -> Result<internal::Config> {
                     let mut settings = internal::TrojanInboundSettings::new();
                     let ext_settings: TrojanInboundSettings =
                         serde_json::from_str(ext_inbound.settings.as_ref().unwrap().get()).unwrap();
-                    if let Some(ext_passwords) = ext_settings.passwords {
-                        for ext_pass in ext_passwords {
-                            settings.passwords.push(ext_pass);
-                        }
+                    if let Some(ext_password) = ext_settings.password {
+                        settings.password = ext_password;
+                    } else {
+                        settings.password = "".to_string(); // FIXME warns?
                     }
                     let settings = settings.write_to_bytes().unwrap();
                     inbound.settings = settings;
@@ -936,11 +934,6 @@ pub fn to_internal(json: &mut Config) -> Result<internal::Config> {
                     for ext_port_range in ext_port_ranges.drain(0..) {
                         // FIXME validate
                         rule.port_ranges.push(ext_port_range);
-                    }
-                }
-                if let Some(ext_its) = ext_rule.inbound_tag.as_mut() {
-                    for it in ext_its.drain(0..) {
-                        rule.inbound_tags.push(it);
                     }
                 }
                 rules.push(rule);

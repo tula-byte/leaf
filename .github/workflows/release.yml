@@ -148,7 +148,7 @@ jobs:
           #          path: libleaf-ios.zip
 
   create-release:
-    needs: [build-bin-cross, build-bin-local]
+    needs: [build-bin-cross, build-bin-local, build-lib-ios]
     runs-on: macos-latest
     steps:
       - name: checkout

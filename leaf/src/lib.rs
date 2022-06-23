@@ -560,7 +560,7 @@ socks-port = 1080
 Direct = direct
 "#;
 
-        for i in 1..3 {
+        for i in 1..10 {
             thread::spawn(move || {
                 let opts = StartOptions {
                     config: Config::Str(conf.to_string()),
@@ -570,10 +570,10 @@ Direct = direct
                 };
                 start(0, opts);
             });
-            thread::sleep(std::time::Duration::from_secs(2));
+            thread::sleep(std::time::Duration::from_secs(5));
             shutdown(0);
             loop {
-                thread::sleep(std::time::Duration::from_secs(1));
+                thread::sleep(std::time::Duration::from_secs(2));
                 if !is_running(0) {
                     break;
                 }

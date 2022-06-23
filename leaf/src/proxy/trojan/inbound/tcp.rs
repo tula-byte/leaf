@@ -1,5 +1,4 @@
 use std::cmp::min;
-use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 
@@ -108,18 +107,15 @@ where
 
 // FIXME anti-detection, redirect traffic
 pub struct Handler {
-    keys: HashMap<Vec<u8>, ()>,
+    key: Vec<u8>,
 }
 
 impl Handler {
-    pub fn new(passwords: Vec<String>) -> Self {
-        let mut keys = HashMap::new();
-        for pass in passwords {
-            let key = Sha224::digest(pass.as_bytes());
-            let key = hex::encode(&key[..]);
-            keys.insert(key.as_bytes().to_vec(), ());
-        }
-        Handler { keys }
+    pub fn new(password: &str) -> Self {
+        let key = Sha224::digest(password.as_bytes());
+        let key = hex::encode(&key[..]);
+        let key = key.as_bytes();
+        Handler { key: key.to_vec() }
     }
 }
 
@@ -137,7 +133,7 @@ impl TcpInboundHandler for Handler {
         // read key
         buf.resize(56, 0);
         stream.read_exact(&mut buf).await?;
-        if !self.keys.contains_key(&buf[..]) {
+        if self.key[..] != buf[..] {
             return Err(io::Error::new(io::ErrorKind::Other, "invalid key"));
         }
         // read crlf

@@ -69,12 +69,12 @@ lazy_static! {
 
     /// Uplink timeout after downlink EOF.
     pub static ref TCP_UPLINK_TIMEOUT: u64 = {
-        get_env_var_or("TCP_UPLINK_TIMEOUT", 10)
+        get_env_var_or("TCP_UPLINK_TIMEOUT", 2)
     };
 
     /// Downlink timeout after uplink EOF.
     pub static ref TCP_DOWNLINK_TIMEOUT: u64 = {
-        get_env_var_or("TCP_DOWNLINK_TIMEOUT", 10)
+        get_env_var_or("TCP_DOWNLINK_TIMEOUT", 4)
     };
 
     /// Buffer size for uplink and downlink connections, in KB.
@@ -95,6 +95,12 @@ lazy_static! {
         let mut file = std::env::current_exe().unwrap();
         file.pop();
         get_env_var_or("ASSET_LOCATION", file.to_str().unwrap().to_string())
+    };
+
+    pub static ref DATABASE_LOCATION: String = {
+        let mut file = std::env::current_exe().unwrap();
+        file.pop();
+        get_env_var_or("DATABASE_LOCATION", file.to_str().unwrap().to_string())
     };
 
     pub static ref CACHE_LOCATION: String = {

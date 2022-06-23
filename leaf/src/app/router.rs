@@ -7,11 +7,14 @@ use cidr::{Cidr, IpCidr};
 use futures::TryFutureExt;
 use log::*;
 use maxminddb::geoip2::Country;
-use memmap2::Mmap;
+use memmap::Mmap;
 
 use crate::app::SyncDnsClient;
 use crate::config::{self, Router_Rule};
 use crate::session::{Network, Session, SocksAddr};
+
+extern crate bloom;
+use bloom::{ASMS, BloomFilter};
 
 pub trait Condition: Send + Sync + Unpin {
     fn apply(&self, sess: &Session) -> bool;
@@ -416,16 +419,26 @@ pub struct Router {
     rules: Vec<Rule>,
     domain_resolve: bool,
     dns_client: SyncDnsClient,
+    bloom_filter: BloomFilter,
+    reject_response: String
 }
 
 impl Router {
-    fn load_rules(rules: &mut Vec<Rule>, routing_rules: &mut protobuf::RepeatedField<Router_Rule>) {
+    fn load_rules(rules: &mut Vec<Rule>, routing_rules: &mut protobuf::RepeatedField<Router_Rule>, bloom_filter: &mut BloomFilter) {
         let mut mmdb_readers: HashMap<String, Arc<maxminddb::Reader<Mmap>>> = HashMap::new();
         for rr in routing_rules.iter_mut() {
             let mut cond_and = ConditionAnd::new();
 
             if rr.domains.len() > 0 {
-                cond_and.add(Box::new(DomainMatcher::new(&mut rr.domains)));
+                if rr.target_tag == String::from("TulaBlock"){
+                    let bloom_domains = Box::new(&mut rr.domains);
+                    for domain in bloom_domains.iter_mut(){
+                        let d: String = domain.value.clone();
+                        bloom_filter.insert(&d);
+                    }
+                } else {
+                    cond_and.add(Box::new(DomainMatcher::new(&mut rr.domains)));
+                }
             }
 
             if rr.ip_cidrs.len() > 0 {
@@ -469,6 +482,7 @@ impl Router {
 
             if cond_and.is_empty() {
                 warn!("empty rule at target {}", rr.target_tag);
+                warn!("ASSET_LOCATION: {}", &*crate::option::ASSET_LOCATION);
                 continue;
             }
 
@@ -483,14 +497,18 @@ impl Router {
     ) -> Self {
         let mut rules: Vec<Rule> = Vec::new();
         let mut domain_resolve = false;
+        let mut bloom_filter = BloomFilter::with_rate(0.001, 110000);
+        let reject_response = String::from("TulaBlock");
         if let Some(router) = router.as_mut() {
-            Self::load_rules(&mut rules, &mut router.rules);
+            Self::load_rules(&mut rules, &mut router.rules, &mut bloom_filter);
             domain_resolve = router.domain_resolve;
         }
         Router {
             rules,
             domain_resolve,
             dns_client,
+            bloom_filter,
+            reject_response,
         }
     }
 
@@ -500,13 +518,19 @@ impl Router {
     ) -> Result<()> {
         self.rules.clear();
         if let Some(router) = router.as_mut() {
-            Self::load_rules(&mut self.rules, &mut router.rules);
+            Self::load_rules(&mut self.rules, &mut router.rules, &mut self.bloom_filter);
             self.domain_resolve = router.domain_resolve;
         }
         Ok(())
     }
 
     pub async fn pick_route(&self, sess: &Session) -> Result<&String> {
+
+        if self.bloom_filter.contains(&sess.destination.domain().unwrap()) {
+            debug!("checked {:?} on bloom filter", &sess.destination.domain());
+            return Ok(&self.reject_response);
+        }
+
         for rule in &self.rules {
             if rule.apply(sess) {
                 return Ok(&rule.target);

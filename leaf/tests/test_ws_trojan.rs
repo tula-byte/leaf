@@ -78,9 +78,7 @@ fn test_ws_trojan() {
                 "protocol": "trojan",
                 "tag": "trojan",
                 "settings": {
-                    "passwords": [
-                        "password"
-                    ]
+                    "password": "password"
                 }
             }
         ],

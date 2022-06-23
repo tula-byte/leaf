@@ -1,17 +1,13 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
-use tokio::time::timeout;
 
 use crate::{
-    app::{dns_client::DnsClient, outbound::manager::OutboundManager, SyncDnsClient},
+    app::{dns_client::DnsClient, outbound::manager::OutboundManager},
     config::Config,
-    proxy::{AnyOutboundHandler, TcpOutboundHandler, UdpOutboundHandler},
+    proxy::{TcpOutboundHandler, UdpOutboundHandler},
     session::{Session, SocksAddr},
 };
 
@@ -68,13 +64,34 @@ pub fn run_with_options(
     crate::start(rt_id, opts)
 }
 
-async fn test_tcp_outbound(
-    sess: &Session,
-    dns_client: SyncDnsClient,
-    handler: &AnyOutboundHandler,
-) {
+pub async fn test_outbound(tag: &str, config: &Config) {
+    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::str::FromStr;
+    use trust_dns_proto::{
+        op::{header::MessageType, op_code::OpCode, query::Query, Message},
+        rr::{record_type::RecordType, Name},
+    };
+
+    let dns_client = Arc::new(RwLock::new(DnsClient::new(&config.dns).unwrap()));
+    let outbound_manager = OutboundManager::new(&config.outbounds, dns_client.clone()).unwrap();
+    let handler = if let Some(v) = outbound_manager.get(tag) {
+        v
+    } else {
+        println!("outbound {} not found", tag);
+        return;
+    };
+    println!("testing outbound {}", &handler.tag());
+
+    println!();
+
+    println!("testing TCP...");
     let start = tokio::time::Instant::now();
-    match crate::proxy::connect_tcp_outbound(sess, dns_client, handler).await {
+    let sess = Session {
+        destination: SocksAddr::Domain("www.google.com".to_string(), 80),
+        ..Default::default()
+    };
+    match crate::proxy::connect_tcp_outbound(&sess, dns_client.clone(), &handler).await {
         Ok(stream) => match TcpOutboundHandler::handle(handler.as_ref(), &sess, stream).await {
             Ok(mut stream) => {
                 if let Err(e) = stream.write_all(b"HEAD / HTTP/1.1\r\n\r\n").await {
@@ -105,22 +122,18 @@ async fn test_tcp_outbound(
             println!("dispatch to outbound {} failed: {}", &handler.tag(), e);
         }
     }
-}
 
-async fn test_udp_outbound(
-    sess: &Session,
-    dns_client: SyncDnsClient,
-    handler: &AnyOutboundHandler,
-) {
-    use rand::{rngs::StdRng, Rng, SeedableRng};
-    use trust_dns_proto::{
-        op::{header::MessageType, op_code::OpCode, query::Query, Message},
-        rr::{record_type::RecordType, Name},
-    };
+    println!();
+
+    println!("testing UDP...");
     let start = tokio::time::Instant::now();
-    match crate::proxy::connect_udp_outbound(sess, dns_client, handler).await {
+    let sess = Session {
+        destination: SocksAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53)),
+        ..Default::default()
+    };
+    match crate::proxy::connect_udp_outbound(&sess, dns_client, &handler).await {
         Ok(transport) => {
-            match UdpOutboundHandler::handle(handler.as_ref(), sess, transport).await {
+            match UdpOutboundHandler::handle(handler.as_ref(), &sess, transport).await {
                 Ok(socket) => {
                     let addr =
                         SocksAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53));
@@ -162,49 +175,5 @@ async fn test_udp_outbound(
         Err(e) => {
             println!("dispatch to outbound {} failed: {}", &handler.tag(), e);
         }
-    }
-}
-
-pub async fn test_outbound(tag: &str, config: &Config) {
-    let dns_client = Arc::new(RwLock::new(DnsClient::new(&config.dns).unwrap()));
-    let outbound_manager = OutboundManager::new(&config.outbounds, dns_client.clone()).unwrap();
-    let handler = if let Some(v) = outbound_manager.get(tag) {
-        v
-    } else {
-        println!("outbound {} not found", tag);
-        return;
     };
-    println!("testing outbound {}", &handler.tag());
-
-    println!();
-
-    println!("testing TCP...");
-    let sess = Session {
-        destination: SocksAddr::Domain("www.google.com".to_string(), 80),
-        ..Default::default()
-    };
-    if let Err(e) = timeout(
-        Duration::from_secs(4),
-        test_tcp_outbound(&sess, dns_client.clone(), &handler),
-    )
-    .await
-    {
-        println!("test outbound {} failed: {}", &handler.tag(), e);
-    }
-
-    println!();
-
-    println!("testing UDP...");
-    let sess = Session {
-        destination: SocksAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53)),
-        ..Default::default()
-    };
-    if let Err(e) = timeout(
-        Duration::from_secs(4),
-        test_udp_outbound(&sess, dns_client.clone(), &handler),
-    )
-    .await
-    {
-        println!("test outbound {} failed: {}", &handler.tag(), e);
-    }
 }

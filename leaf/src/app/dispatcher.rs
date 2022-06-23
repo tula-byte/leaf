@@ -1,10 +1,12 @@
 use std::convert::TryFrom;
 use std::io::{self, ErrorKind};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::path::Path;
 
 use futures::future::{self, Either};
 use log::*;
+use rusqlite::ffi::SQLITE_ABORT;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::RwLock;
 use tokio::time::timeout;
@@ -20,33 +22,69 @@ use crate::{
 use super::outbound::manager::OutboundManager;
 use super::router::Router;
 
+use rusqlite::{params, Connection, Result};
+
+// SQL handler struct
+pub struct SQLiteManager {
+    conn: rusqlite::Connection
+}
+
+impl SQLiteManager {
+    pub fn new() -> Self {
+        let db_path = Path::new(&*crate::option::DATABASE_LOCATION).to_str().unwrap();
+        let connection = Connection::open(db_path).unwrap();
+        
+        return SQLiteManager{conn: connection};
+    }
+
+    pub fn log(
+        &self,
+        network: &Network,
+        destination: &String,
+        handshake_time: &u128,
+        domain: &SocksAddr
+    ) {
+        match self.conn.execute("
+            INSERT INTO log(network, destination, handshake, domain)
+            values(?1, ?2, ?3, ?4)
+        ", params![network.to_string(), destination, (*handshake_time as u64), domain.to_string()]) 
+        {
+            Ok(_) => info!("Logged"),
+            Err(e) => info!("Logging error - {}", &e)
+        };
+    }
+}
+
 #[inline]
 fn log_request(
     sess: &Session,
     outbound_tag: &str,
-    outbound_tag_color: colored::Color,
-    handshake_time: Option<u128>,
+    outbound_tag_color: Option<colored::Color>,
+    handshake_time: u128,
 ) {
-    let hs = handshake_time.map_or("failed".to_string(), |hs| format!("{}ms", hs));
-    if !*crate::option::LOG_NO_COLOR {
+    if let Some(color) = outbound_tag_color {
         use colored::Colorize;
         let network_color = match sess.network {
             Network::Tcp => colored::Color::Blue,
             Network::Udp => colored::Color::Yellow,
         };
         info!(
-            "[{}] [{}] [{}] [{}] {}",
+            "[{}] [{}] [{}] [{}ms] {}",
             &sess.inbound_tag,
             sess.network.to_string().color(network_color),
-            outbound_tag.color(outbound_tag_color),
-            hs,
+            outbound_tag.color(color),
+            handshake_time,
             &sess.destination,
         );
     } else {
         info!(
-            "[{}] [{}] [{}] [{}] {}",
-            sess.network, &sess.inbound_tag, outbound_tag, hs, &sess.destination,
+            "[{}] [{}] [{}] [{}ms] {}",
+            sess.network, &sess.inbound_tag, outbound_tag, handshake_time, &sess.destination,
         );
+        /*
+        let db = SQLiteManager::new();
+        db.log(&sess.network, &String::from(outbound_tag), &handshake_time, &sess.destination);
+        */
     }
 }
 
@@ -54,6 +92,7 @@ pub struct Dispatcher {
     outbound_manager: Arc<RwLock<OutboundManager>>,
     router: Arc<RwLock<Router>>,
     dns_client: SyncDnsClient,
+    db: Arc<Mutex<SQLiteManager>>
 }
 
 impl Dispatcher {
@@ -66,8 +105,9 @@ impl Dispatcher {
             outbound_manager,
             router,
             dns_client,
+            db: Arc::new(Mutex::new(SQLiteManager::new()))
         }
-    }
+        }
 
     pub async fn dispatch_tcp<T>(&self, sess: &mut Session, lhs: T)
     where
@@ -87,7 +127,7 @@ impl Dispatcher {
                                 match SocksAddr::try_from((&domain, sess.destination.port())) {
                                     Ok(a) => a,
                                     Err(e) => {
-                                        warn!(
+                                        debug!(
                                             "convert sniffed domain {} to destination failed: {}",
                                             &domain, e,
                                         );
@@ -97,9 +137,11 @@ impl Dispatcher {
                         }
                     }
                     Err(e) => {
-                        debug!(
+                        trace!(
                             "sniff tcp uplink {} -> {} failed: {}",
-                            &sess.source, &sess.destination, e,
+                            &sess.source,
+                            &sess.destination,
+                            e,
                         );
                         return;
                     }
@@ -146,7 +188,7 @@ impl Dispatcher {
             h
         } else {
             // FIXME use  the default handler
-            warn!("handler not found");
+            debug!("handler not found");
             if let Err(e) = lhs.shutdown().await {
                 debug!(
                     "tcp downlink {} <- {} error: {}",
@@ -168,7 +210,6 @@ impl Dispatcher {
                         &h.tag(),
                         e
                     );
-                    log_request(sess, h.tag(), h.color(), None);
                     return;
                 }
             };
@@ -176,7 +217,13 @@ impl Dispatcher {
             Ok(rhs) => {
                 let elapsed = tokio::time::Instant::now().duration_since(handshake_start);
 
-                log_request(sess, h.tag(), h.color(), Some(elapsed.as_millis()));
+                if *crate::option::LOG_NO_COLOR {
+                    log_request(sess, h.tag(), None, elapsed.as_millis());
+                    self.db.lock().unwrap().log(&sess.network, &String::from(h.tag()), &elapsed.as_millis(), &sess.destination);
+                } else {
+                    log_request(sess, h.tag(), Some(h.color()), elapsed.as_millis());
+                    self.db.lock().unwrap().log(&sess.network, &String::from(h.tag()), &elapsed.as_millis(), &sess.destination);
+                }
 
                 let (lr, mut lw) = tokio::io::split(lhs);
                 let (rr, mut rw) = tokio::io::split(rhs);
@@ -417,6 +464,11 @@ impl Dispatcher {
                 }
             }
             Err(e) => {
+                if let "TulaBlock" = h.tag().as_str() {
+                    let dummy_handshake_time: u128 = 0;
+                    log_request(sess, h.tag(), None, dummy_handshake_time);
+                    self.db.lock().unwrap().log(&sess.network, &String::from(h.tag()), &dummy_handshake_time, &sess.destination);
+                }
                 debug!(
                     "dispatch tcp {} -> {} to [{}] failed: {}",
                     &sess.source,
@@ -424,8 +476,6 @@ impl Dispatcher {
                     &h.tag(),
                     e
                 );
-
-                log_request(sess, h.tag(), h.color(), None);
 
                 if let Err(e) = lhs.shutdown().await {
                     debug!(
@@ -460,7 +510,6 @@ impl Dispatcher {
                         );
                         tag
                     } else {
-                        warn!("no handler found");
                         return Err(io::Error::new(ErrorKind::Other, "no available handler"));
                     }
                 }
@@ -471,7 +520,6 @@ impl Dispatcher {
         let h = if let Some(h) = self.outbound_manager.read().await.get(&outbound) {
             h
         } else {
-            warn!("handler not found");
             return Err(io::Error::new(ErrorKind::Other, "handler not found"));
         };
 
@@ -482,7 +530,13 @@ impl Dispatcher {
             Ok(c) => {
                 let elapsed = tokio::time::Instant::now().duration_since(handshake_start);
 
-                log_request(sess, h.tag(), h.color(), Some(elapsed.as_millis()));
+                if *crate::option::LOG_NO_COLOR {
+                    log_request(sess, h.tag(), None, elapsed.as_millis());
+                    self.db.lock().unwrap().log(&sess.network, &String::from(h.tag()), &elapsed.as_millis(), &sess.destination);
+                } else {
+                    log_request(sess, h.tag(), Some(h.color()), elapsed.as_millis());
+                    self.db.lock().unwrap().log(&sess.network, &String::from(h.tag()), &elapsed.as_millis(), &sess.destination);
+                }
 
                 Ok(c)
             }
@@ -494,7 +548,6 @@ impl Dispatcher {
                     &h.tag(),
                     e
                 );
-                log_request(sess, h.tag(), h.color(), None);
                 Err(e)
             }
         }

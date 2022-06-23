@@ -355,6 +355,7 @@ impl DnsClient {
         }
 
         if !cached_ips.is_empty() {
+            //trace!("Cached IPs:\n {:#?}", &cached_ips);
             Ok(cached_ips)
         } else {
             Err(anyhow!("empty result"))
